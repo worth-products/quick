@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Claim Processing (Admin)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<!-- CryptoJS before shared.js -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+<script src="shared.js"></script>
+</head>
+
+<body class="bg-gray-50 min-h-screen">
+  <header class="bg-white shadow p-4 flex items-center justify-between">
+    <h1 class="text-xl font-bold">Claim Processing</h1>
+    <div class="flex gap-2">
+      <a href="submission.html" class="text-sm text-slate-600 underline">Go to Submission (customer)</a>
+      <button onclick="logout()" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded">Logout</button>
+    </div>
+  </header>
+
+  <main class="max-w-6xl mx-auto p-4">
+    <script>requireRole("admin");</script>
+
+    <div class="bg-white rounded-2xl shadow p-6 mb-4">
+      <div class="flex flex-col md:flex-row gap-3 items-start md:items-end">
+        <div class="flex-1">
+          <label class="text-sm font-medium">Search by Claim ID</label>
+          <input id="searchId" class="border p-2 rounded w-full" placeholder="e.g., CLM-001" />
+        </div>
+        <div class="flex gap-2">
+          <button id="searchBtn" class="bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded">Search</button>
+          <button id="showAllBtn" class="bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded">Show All</button>
+          <button id="clearBtn" class="bg-gray-200 px-4 py-2 rounded">Clear</button>
+        </div>
+      </div>
+      <p class="text-xs text-slate-500">Click “Open” to decrypt and review a claim.</p>
+    </div>
+
+    <div id="results" class="space-y-3"></div>
+  </main>
+
+  <!-- Modal -->
+  <div id="modal" class="hidden fixed inset-0 bg-black/40 z-50 flex items-center justify-center">
+    <div class="bg-white w-11/12 max-w-3xl rounded-2xl shadow p-6">
+      <div class="flex items-start justify-between">
+        <h3 class="text-lg font-bold">Review Claim</h3>
+        <button id="closeModal" class="text-slate-600">Close</button>
+      </div>
+      <div id="modalMeta" class="text-xs text-slate-500 mt-1"></div>
+
+      <form id="editForm" class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4 max-h-[55vh] overflow-auto"></form>
+
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-2">
+        <textarea id="rejectReason" class="border p-2 rounded" rows="3" placeholder="Rejection reason (required only if Reject)"></textarea>
+        <div class="flex flex-wrap gap-2">
+          <button id="btnValidate" class="bg-gray-200 px-3 py-2 rounded">Validate</button>
+          <button id="btnApprove" class="bg-green-600 hover:bg-green-700 text-white px-3 py-2 rounded">Approve</button>
+          <button id="btnReject" class="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded">Reject</button>
+          <button id="btnPDF" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded">Export PDF</button>
+          <button id="btnDownloadXML" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded">Download XML</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const resultsEl = document.getElementById("results");
+  const searchIdEl = document.getElementById("searchId");
+
+  function renderList(obj) {
+    let html = "";
+    const ids = Object.keys(obj);
+    if (!ids.length) {
+      resultsEl.innerHTML = `<div class="text-sm text-slate-500">No claims found.</div>`;
+      return;
+    }
+
+    ids.forEach(id => {
+      const rec = obj[id];
+      const latest = rec.versions[rec.versions.length - 1];
+      html += `
+        <div class="border rounded-xl bg-white p-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-semibold">${id}</div>
+              <div class="text-xs text-slate-500">
+                ${rec.meta?.patientName || "Unknown"} • Policy: ${rec.meta?.policyNo || "-"} • Versions: ${rec.versions.length}
+              </div>
+            </div>
+            <div class="text-xs">
+              <span class="inline-block rounded px-2 py-1 ${latest.status === 'Approved' ? 'bg-emerald-100 text-emerald-700' :
+                latest.status === 'Rejected' ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-700'}">${latest.status}</span>
+              <span class="ml-2 text-slate-500">${new Date(latest.timestamp).toLocaleString()}</span>
+            </div>
+          </div>
+
+          <div class="mt-2">
+            ${rec.versions.slice().reverse().map(v => `
+              <div class="text-xs flex items-center justify-between border rounded p-2 mb-1">
+                <div>v${v.version} • ${new Date(v.timestamp).toLocaleString()} • ${v.status}</div>
+                <div class="flex gap-2">
+                  <button class="openBtn bg-sky-600 text-white px-2 py-1 rounded text-xs"
+                          data-id="${id}" data-ver="${v.version}">Open</button>
+                </div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+      `;
+    });
+
+    resultsEl.innerHTML = html;
+    document.querySelectorAll(".openBtn").forEach(b => b.onclick = () => openClaim(b.dataset.id, Number(b.dataset.ver)));
+  }
+
+  function doSearch() {
+    const id = searchIdEl.value.trim();
+    const db = getClaimsDB();
+    if (!id) { resultsEl.innerHTML = `<div class="text-sm text-slate-500">Enter a Claim ID to search.</div>`; return; }
+    if (!db[id]) { resultsEl.innerHTML = `<div class="text-sm text-slate-500">No records for ${id}.</div>`; return; }
+    renderList({ [id]: db[id] });
+  }
+
+  document.getElementById("searchBtn").onclick = doSearch;
+  document.getElementById("showAllBtn").onclick = () => renderList(getClaimsDB());
+  document.getElementById("clearBtn").onclick = () => { searchIdEl.value = ""; resultsEl.innerHTML = ""; };
+
+  // Modal controls & state
+  let curId = "", curVer = 0, curData = null, curXML = "";
+
+  function openClaim(id, ver) {
+    const db = getClaimsDB();
+    const rec = db[id];
+    const vr = rec.versions.find(v => v.version === ver);
+    const decrypted = decryptXML(vr.xml);
+    if (!decrypted) return alert("❌ Decryption failed. Check key.");
+
+    curId = id; curVer = ver; curXML = decrypted;
+
+    // Parse minimal XML → object (simple DOM read)
+    const doc = new DOMParser().parseFromString(decrypted, "application/xml");
+    const get = tag => doc.getElementsByTagName(tag)[0]?.textContent ?? "";
+
+    curData = {
+      patientName: get("Name"),
+      dob: get("DOB"),
+      gender: get("Gender"),
+      policyNo: get("PolicyNumber"),
+      insurer: get("Insurer"),
+      planType: get("PlanType"),
+      claimId: get("ClaimID"),
+      dos: get("DateOfService"),
+      diag: get("DiagnosisCode"),
+      amount: get("ClaimAmount"),
+      hospital: get("Hospital"),
+      npi: get("NPI"),
+      status: get("Status"),
+      rejectionReason: get("RejectionReason")
+    };
+
+    // Build edit form
+    const fields = [
+      ["patientName","Patient Name"], ["dob","DOB"], ["gender","Gender"],
+      ["policyNo","Policy Number"], ["insurer","Insurer"], ["planType","Plan Type"],
+      ["claimId","Claim ID"], ["dos","Date of Service"], ["diag","Diagnosis Code"],
+      ["amount","Claim Amount"], ["hospital","Hospital/Provider"], ["npi","NPI (Provider ID)"],
+      ["status","Status (read-only)"]
+    ];
+    const ef = document.getElementById("editForm");
+    ef.innerHTML = "";
+    fields.forEach(([key,label])=>{
+      const ro = key === "claimId" || key === "status";
+      ef.innerHTML += `
+        <div>
+          <label class="text-sm font-medium">${label}</label>
+          <input id="f_${key}" class="border p-2 rounded w-full" ${ro ? "readonly" : ""} value="${(curData[key]||"").replace(/"/g,"&quot;")}" />
+        </div>`;
+    });
+
+    document.getElementById("rejectReason").value = curData.rejectionReason || "";
+
+    document.getElementById("modalMeta").textContent =
+      `${id} • v${ver} • ${rec.meta?.patientName || "-"} • ${rec.meta?.policyNo || "-"}`;
+
+    document.getElementById("modal").classList.remove("hidden");
+  }
+
+  document.getElementById("closeModal").onclick = () => document.getElementById("modal").classList.add("hidden");
+
+  function collectForm() {
+    const getv = k => document.getElementById("f_"+k).value.trim();
+    const updated = {
+      patientName: getv("patientName"),
+      dob: getv("dob"),
+      gender: getv("gender"),
+      policyNo: getv("policyNo"),
+      insurer: getv("insurer"),
+      planType: getv("planType"),
+      claimId: getv("claimId"),
+      dos: getv("dos"),
+      diag: getv("diag"),
+      amount: getv("amount"),
+      hospital: getv("hospital"),
+      npi: getv("npi"),
+      status: getv("status") || "Submitted"
+    };
+    return updated;
+  }
+
+  // Validate
+  document.getElementById("btnValidate").onclick = (e) => {
+    e.preventDefault();
+    const data = collectForm();
+    const errs = validateClaim(data, { requireAll: true, numericAmount: true });
+    alert(errs.length ? ("❌ Errors:\n- " + errs.join("\n- ")) : "✅ Looks valid.");
+  };
+
+  // Approve → creates new version
+  document.getElementById("btnApprove").onclick = (e) => {
+    e.preventDefault();
+    const data = collectForm();
+    data.status = "Approved";
+    const errs = validateClaim(data, { requireAll: true, numericAmount: true });
+    if (errs.length) return alert("❌ Fix errors before approving:\n- " + errs.join("\n- "));
+    const xml = generateClaimXML(data); // no rejection reason in approved
+    appendNewVersion(curId, xml, "Approved");
+    alert(`✅ Claim ${curId} approved. New version created.`);
+    document.getElementById("modal").classList.add("hidden");
+    renderList(getClaimsDB());
+  };
+
+  // Reject → needs reason → creates new version
+  document.getElementById("btnReject").onclick = (e) => {
+    e.preventDefault();
+    const data = collectForm();
+    data.status = "Rejected";
+    const reason = document.getElementById("rejectReason").value.trim();
+    if (!reason) return alert("Please provide a rejection reason.");
+    const errs = validateClaim(data, { requireAll: true, numericAmount: true, allowRejected: true });
+    // For reject, we allow some fields missing if allowRejected=false; here requireAll is true to enforce completeness even when rejected.
+    // Adjust to your policy.
+    if (errs.length) return alert("❌ Fix errors:\n- " + errs.join("\n- "));
+    const xml = generateClaimXML(data, { rejectionReason: reason });
+    appendNewVersion(curId, xml, "Rejected");
+    alert(`❌ Claim ${curId} rejected. New version created.`);
+    document.getElementById("modal").classList.add("hidden");
+    renderList(getClaimsDB());
+  };
+
+  // Download XML (decrypted current open version)
+  document.getElementById("btnDownloadXML").onclick = (e) => {
+    e.preventDefault();
+    const data = collectForm();
+    const reason = document.getElementById("rejectReason").value.trim();
+    const xml = generateClaimXML(data, { rejectionReason: reason || undefined });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([xml], { type: "application/xml" }));
+    a.download = `${data.claimId}_preview.xml`;
+    a.click();
+  };
+
+  // PDF export (decrypted preview of current modal data)
+  document.getElementById("btnPDF").onclick = (e) => {
+    e.preventDefault();
+    const data = collectForm();
+    const reason = document.getElementById("rejectReason").value.trim();
+    exportClaimPDF(data, reason);
+  };
+
+  // Utilities: write a new encrypted version
+  function appendNewVersion(id, xml, status) {
+    const db = getClaimsDB();
+    if (!db[id]) return alert("Internal error: claim not found.");
+    const encrypted = encryptXML(xml);
+    db[id].versions.push({
+      version: db[id].versions.length + 1,
+      timestamp: Date.now(),
+      status,
+      xml: encrypted
+    });
+    // Keep meta fresh
+    const obj = xmlToObject(xml);
+    db[id].meta = { policyNo: obj.PolicyNumber || db[id].meta?.policyNo, patientName: obj.Name || db[id].meta?.patientName };
+    saveClaimsDB(db);
+  }
+
+  // Simple objectifier (for meta refresh)
+  function xmlToObject(xml) {
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const get = t => doc.getElementsByTagName(t)[0]?.textContent ?? "";
+    return {
+      Name: get("Name"),
+      PolicyNumber: get("PolicyNumber")
+    };
+  }
+
+  // jsPDF export
+  function exportClaimPDF(data, rejectionReason) {
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit: 'pt', format: 'a4' });
+
+    const PAGE_W = doc.internal.pageSize.getWidth();
+    const PAGE_H = doc.internal.pageSize.getHeight();
+    const M = 48, LH = 16;
+    let y = M;
+
+    function line() { doc.setDrawColor(200); doc.line(M, y, PAGE_W - M, y); y += 10; }
+    function row(label, value) {
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(11); doc.text(label, M, y); 
+      doc.setFont('helvetica', 'normal'); doc.setFontSize(11);
+      const txt = doc.splitTextToSize(String(value ?? ''), PAGE_W - M*2 - 150);
+      doc.text(txt, M + 150, y);
+      y += Math.max(LH, txt.length*12);
+    }
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(16);
+    doc.text("Claim Summary", M, y); y += 22;
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(10);
+    doc.text(`Generated: ${new Date().toLocaleString()}`, M, y); y += 14;
+    line();
+
+    row("Claim ID", data.claimId);
+    row("Status", data.status);
+    row("Patient Name", data.patientName);
+    row("DOB", data.dob);
+    row("Gender", data.gender);
+    row("Policy Number", data.policyNo);
+    row("Insurer", data.insurer);
+    row("Plan Type", data.planType);
+    row("Date of Service", data.dos);
+    row("Diagnosis Code", data.diag);
+    row("Claim Amount (₹)", data.amount);
+    row("Hospital/Provider", data.hospital);
+    row("NPI", data.npi);
+
+    if (data.status === "Rejected" && rejectionReason) {
+      line();
+      row("Rejection Reason", rejectionReason);
+    }
+
+    doc.save(`${data.claimId}_summary.pdf`);
+  }
+</script>
+</body>
+</html>

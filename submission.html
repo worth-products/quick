@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Claim Submission (Customer)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- CryptoJS must load before shared.js (shared uses CryptoJS) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+<script src="shared.js"></script>
+</head>
+
+<body class="bg-gray-50 min-h-screen">
+  <header class="bg-white shadow p-4 flex items-center justify-between">
+    <h1 class="text-xl font-bold">Claim Submission</h1>
+    <div class="flex gap-2">
+      <a href="processing.html" class="text-sm text-slate-600 underline">Go to Processing (admin)</a>
+      <button onclick="logout()" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded">Logout</button>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto p-4">
+    <script>requireRole("customer");</script>
+
+    <div class="bg-white rounded-2xl shadow p-6">
+      <h2 class="text-lg font-semibold mb-4">Enter Claim Details</h2>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <!-- Patient -->
+        <div>
+          <label class="text-sm font-medium">Patient Name</label>
+          <input id="patientName" class="border p-2 rounded w-full" />
+        </div>
+        <div>
+          <label class="text-sm font-medium">DOB (YYYY-MM-DD)</label>
+          <input id="dob" class="border p-2 rounded w-full" placeholder="1990-06-15" />
+        </div>
+        <div>
+          <label class="text-sm font-medium">Gender</label>
+          <select id="gender" class="border p-2 rounded w-full">
+            <option>Male</option><option>Female</option><option>Other</option>
+          </select>
+        </div>
+
+        <!-- Insurance -->
+        <div>
+          <label class="text-sm font-medium">Policy Number</label>
+          <input id="policyNo" class="border p-2 rounded w-full" />
+        </div>
+        <div>
+          <label class="text-sm font-medium">Insurer</label>
+          <input id="insurer" class="border p-2 rounded w-full" placeholder="ABC Health Insurance" />
+        </div>
+        <div>
+          <label class="text-sm font-medium">Plan Type</label>
+          <input id="planType" class="border p-2 rounded w-full" placeholder="Silver / Gold / Platinum" />
+        </div>
+
+        <!-- Claim -->
+        <div>
+          <label class="text-sm font-medium">Claim ID</label>
+          <input id="claimId" class="border p-2 rounded w-full" placeholder="CLM-001" />
+        </div>
+        <div>
+          <label class="text-sm font-medium">Date of Service (YYYY-MM-DD)</label>
+          <input id="dos" class="border p-2 rounded w-full" placeholder="2025-11-04" />
+        </div>
+        <div>
+          <label class="text-sm font-medium">Diagnosis Code (ICD)</label>
+          <input id="diag" class="border p-2 rounded w-full" placeholder="J20.9" />
+        </div>
+        <div>
+          <label class="text-sm font-medium">Claim Amount (₹)</label>
+          <input id="amount" class="border p-2 rounded w-full" type="number" min="0" step="0.01" />
+        </div>
+
+        <!-- Provider -->
+        <div>
+          <label class="text-sm font-medium">Hospital/Provider</label>
+          <input id="hospital" class="border p-2 rounded w-full" placeholder="MedLife Hospital" />
+        </div>
+        <div>
+          <label class="text-sm font-medium">NPI (or Provider ID)</label>
+          <input id="npi" class="border p-2 rounded w-full" placeholder="1456789123" />
+        </div>
+      </div>
+
+      <button id="submitClaim" class="mt-5 bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded">Submit Encrypted Claim</button>
+      <p id="msg" class="text-sm text-slate-600 mt-3"></p>
+
+      <details class="mt-4">
+        <summary class="cursor-pointer text-sky-700">What happens when I submit?</summary>
+        <ul class="list-disc ml-6 text-sm text-slate-600 mt-2">
+          <li>Your claim is converted to XML and encrypted (AES-256) client-side.</li>
+          <li>Only processors (admins) can decrypt it in their module.</li>
+          <li>Every change/decision creates a new version with timestamp.</li>
+        </ul>
+      </details>
+    </div>
+  </main>
+
+<script>
+  // Submit handler
+  document.getElementById("submitClaim").onclick = () => {
+    const claim = {
+      patientName: patientName.value.trim(),
+      dob: dob.value.trim(),
+      gender: gender.value,
+      policyNo: policyNo.value.trim(),
+      insurer: insurer.value.trim(),
+      planType: planType.value.trim(),
+      claimId: claimId.value.trim(),
+      dos: dos.value.trim(),
+      diag: diag.value.trim(),
+      amount: String(amount.value).trim(),
+      hospital: hospital.value.trim(),
+      npi: npi.value.trim(),
+      status: "Submitted"
+    };
+
+    const errors = validateClaim(claim, { requireAll: true });
+    const msg = document.getElementById("msg");
+    if (errors.length) {
+      msg.textContent = "❌ " + errors.join("; ");
+      return;
+    }
+
+    const xml = generateClaimXML(claim);
+    const encrypted = encryptXML(xml);
+
+    const db = getClaimsDB();
+    // Initialize entry by ClaimID if new
+    if (!db[claim.claimId]) {
+      db[claim.claimId] = {
+        meta: {
+          policyNo: claim.policyNo,
+          patientName: claim.patientName
+        },
+        versions: []
+      };
+    }
+    db[claim.claimId].versions.push({
+      version: db[claim.claimId].versions.length + 1,
+      timestamp: Date.now(),
+      status: "Submitted",
+      xml: encrypted
+    });
+    saveClaimsDB(db);
+
+    msg.textContent = "✅ Encrypted claim submitted. (v" + db[claim.claimId].versions.length + ")";
+    // Optional: clear form
+    document.querySelectorAll("input").forEach(i => (i.value = ""));
+  };
+</script>
+</body>
+</html>

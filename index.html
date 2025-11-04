@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Medical Claim Login</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- shared.js is imported at end so page loads fast -->
+</head>
+
+<body class="bg-gray-100 min-h-screen flex items-center justify-center">
+  <div class="bg-white w-full max-w-sm p-6 rounded-2xl shadow">
+    <h1 class="text-2xl font-bold text-center mb-6">Medical Claim Portal</h1>
+
+    <label class="text-sm font-medium">Role</label>
+    <select id="role" class="border p-2 rounded w-full mb-3">
+      <option value="customer">Customer</option>
+      <option value="admin">Processor/Admin</option>
+    </select>
+
+    <label class="text-sm font-medium">Username</label>
+    <input id="username" class="border p-2 rounded w-full mb-3" placeholder="Username" />
+
+    <label class="text-sm font-medium">Password</label>
+    <input id="password" type="password" class="border p-2 rounded w-full mb-4" placeholder="Password" />
+
+    <button id="loginBtn" class="bg-sky-600 hover:bg-sky-700 text-white px-4 py-2 rounded w-full">Login</button>
+    <p id="msg" class="text-sm text-center mt-3 text-gray-600"></p>
+
+    <div class="mt-6 text-xs text-gray-500">
+      Demo credentials:<br/>
+      <span class="font-mono">customer / cust123</span><br/>
+      <span class="font-mono">admin / admin123</span>
+    </div>
+  </div>
+
+<script>
+  // Lightweight inline users for demo.
+  const users = {
+    customer: { username: "customer", password: "cust123" },
+    admin: { username: "admin", password: "admin123" }
+  };
+
+  // Lazy-load shared after we bind login to avoid flashing errors if slow networks
+  const script = document.createElement("script");
+  script.src = "shared.js";
+  document.body.appendChild(script);
+
+  // Basic login binding
+  document.getElementById("loginBtn").onclick = () => {
+    const role = document.getElementById("role").value;
+    const uname = document.getElementById("username").value.trim();
+    const pass = document.getElementById("password").value.trim();
+    const msg = document.getElementById("msg");
+
+    if (!users[role]) { msg.textContent = "❌ Unknown role."; return; }
+    if (uname === users[role].username && pass === users[role].password) {
+      // Wait a tick for shared.js to be ready
+      const go = () => {
+        if (window.login) {
+          window.login(role);
+          msg.textContent = "✅ Login successful!";
+          setTimeout(() => {
+            window.location.href = role === "customer" ? "submission.html" : "processing.html";
+          }, 300);
+        } else {
+          setTimeout(go, 50);
+        }
+      };
+      go();
+    } else {
+      msg.textContent = "❌ Invalid credentials.";
+    }
+  };
+</script>
+</body>
+</html>
